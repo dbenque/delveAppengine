@@ -1,0 +1,6 @@
+// Place your settings in this file to overwrite default and user settings.
+{
+        // Specifies the GOPATH to use when no environment variable is set.
+    "go.gopath": "/mnt/code/go"
+    
+}
