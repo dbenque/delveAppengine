@@ -5,30 +5,11 @@ package main
 import (
 	"fmt"
 	"io/ioutil"
-	"sort"
 	"strconv"
 	"strings"
 )
 
-func getRecentProcess(pids sort.IntSlice) int {
-	if len(pids) == 0 {
-		return 0
-	}
-
-	tmax := uint64(0)
-	pid := 0
-
-	for _, p := range pids {
-		t := getStartTime(p)
-		if t > tmax {
-			pid = p
-			tmax = t
-		}
-	}
-	return pid
-}
-
-func getStartTime(pid int) uint64 {
+func getProcessStartTime(pid int) uint64 {
 	statPath := fmt.Sprintf("/proc/%d/stat", pid)
 	dataBytes, err := ioutil.ReadFile(statPath)
 	if err != nil {

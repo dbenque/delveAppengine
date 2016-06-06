@@ -7,17 +7,17 @@ import (
 	"sync"
 	"time"
 
+	"github.com/derekparker/delve/service"
 	"github.com/derekparker/delve/service/rpc"
 	"github.com/mitchellh/go-ps"
-
-	"github.com/derekparker/delve/service"
 )
 
 func main() {
 	debuggedPID := 0
 	pidchan := make(chan int)
 	ticker := time.NewTicker(3 * time.Second)
-	// Monitor the appengine modules
+
+	// Monitor the appengine modules process
 	go func() {
 		for range ticker.C {
 			processes, err := ps.Processes()
@@ -32,7 +32,7 @@ func main() {
 			}
 			if len(pids) > 0 {
 				if len(pids) == 1 {
-					if pids[0] == debuggedPID {
+					if pids[0] == debuggedPID { // already attached to that one
 						continue
 					}
 				}
@@ -41,6 +41,7 @@ func main() {
 		}
 	}()
 
+	// Wait for a PID and attach a new debugger to it
 	var stopChan chan bool
 	for pid := range pidchan {
 		if pid != debuggedPID && pid != 0 {
@@ -53,30 +54,29 @@ func main() {
 				for errCon == nil {
 					conn, errCon = net.Dial("tcp", ":2345")
 					if errCon == nil {
-						log.Println("still able to dial")
+						log.Println("Old server still listening.")
 						conn.Close()
 						time.Sleep(1 * time.Second)
 					}
 				}
-
 			}
 			debuggedPID = pid
-			stopChan = executeDlv(debuggedPID)
+			stopChan = attachDelveServer(debuggedPID)
 		}
 	}
 }
 
-func executeDlv(attachPid int) chan bool {
+func attachDelveServer(attachPid int) chan bool {
 	stopChan := make(chan bool)
-	var wg sync.WaitGroup
-	wg.Add(1)
+	var wgServerRunning sync.WaitGroup
+	wgServerRunning.Add(1)
 	go func() {
 		defer close(stopChan)
 
 		// Make a TCP listener
 		listener, err := net.Listen("tcp", ":2345")
 		for err != nil {
-			log.Printf("couldn't start listener: %s\n", err)
+			log.Printf("Couldn't start listener: %s\n", err)
 			time.Sleep(1 * time.Second)
 		}
 		defer listener.Close()
@@ -86,20 +86,35 @@ func executeDlv(attachPid int) chan bool {
 			Listener:    listener,
 			ProcessArgs: []string{},
 			AttachPid:   attachPid,
-			AcceptMulti: false,
+			AcceptMulti: true,
 		}, true)
 		if err := server.Run(); err != nil {
 			log.Println(err.Error())
 		} else {
-			log.Printf("DLV Server started for PID %d\n", attachPid)
 			defer server.Stop(false)
 		}
-		wg.Done()
+		wgServerRunning.Done()
 		<-stopChan
 	}()
 
 	//wait for the server to be running
-	wg.Wait()
-
+	wgServerRunning.Wait()
 	return stopChan
+}
+
+//getRecentProcess within these PIDs which one is the latest one ?
+func getRecentProcess(pids sort.IntSlice) int {
+	if len(pids) == 0 {
+		return 0
+	}
+	tmax := uint64(0)
+	pid := 0
+	for _, p := range pids {
+		t := getProcessStartTime(p)
+		if t > tmax {
+			pid = p
+			tmax = t
+		}
+	}
+	return pid
 }
