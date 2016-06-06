@@ -28,3 +28,12 @@ func getProcessStartTime(pid int) uint64 {
 	startTime, _ := strconv.ParseUint(fields[21-2], 10, 64)
 	return startTime
 }
+
+func binaryContainsMagicKey(pid int, key string) bool {
+	exePath := fmt.Sprintf("/proc/%d/exe", pid)
+	dataBytes, err := ioutil.ReadFile(exePath)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(dataBytes), key)
+}

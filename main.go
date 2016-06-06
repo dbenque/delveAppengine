@@ -58,12 +58,33 @@ func checkAppengineModuleProcess() {
 	if err != nil {
 		log.Fatalln(err.Error())
 	}
-	pids := sort.IntSlice{}
-	for _, p := range processes {
-		if p.Executable() == "_go_app" {
-			pids = append(pids, p.Pid())
+
+	// check each process
+	pchan := make(chan int)
+	go func() {
+		var wg sync.WaitGroup
+		defer close(pchan)
+		for _, p := range processes {
+			if p.Executable() == "_go_app" {
+				wg.Add(1)
+				go func(pid int) {
+					defer wg.Done()
+					if len(magicKey) == 0 || binaryContainsMagicKey(pid, magicKey) {
+						pchan <- pid
+					}
+				}(p.Pid())
+			}
 		}
+		wg.Wait()
+	}()
+
+	//build the slice of PIDs
+	pids := sort.IntSlice{}
+	for pid := range pchan {
+		pids = append(pids, pid)
 	}
+
+	// keep the youngest one
 	if len(pids) > 0 {
 		if len(pids) == 1 {
 			if pids[0] == DebuggedPID { // already attached to that one
