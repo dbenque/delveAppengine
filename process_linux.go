@@ -9,11 +9,12 @@ import (
 	"strings"
 )
 
-func getProcessStartTime(pid int) uint64 {
+//return the start time and a bool indicating if the process is Zombie
+func getProcessStartTime(pid int) (uint64, bool) {
 	statPath := fmt.Sprintf("/proc/%d/stat", pid)
 	dataBytes, err := ioutil.ReadFile(statPath)
 	if err != nil {
-		return 0
+		return 0, false
 	}
 
 	// First, parse out the image name (can contain space char)
@@ -26,7 +27,7 @@ func getProcessStartTime(pid int) uint64 {
 	//(field 22 is starttime (index 21)) and we have already shifted by two elements
 
 	startTime, _ := strconv.ParseUint(fields[21-2], 10, 64)
-	return startTime
+	return startTime, fields[0] == "Z"
 }
 
 func binaryContainsMagicKey(pid int, key string) bool {

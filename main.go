@@ -152,7 +152,10 @@ func getRecentProcess(pids sort.IntSlice) int {
 	tmax := uint64(0)
 	pid := 0
 	for _, p := range pids {
-		t := getProcessStartTime(p)
+		t, zombie := getProcessStartTime(p)
+		if zombie {
+			continue
+		}
 		if t > tmax {
 			pid = p
 			tmax = t
