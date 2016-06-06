@@ -1,6 +1,8 @@
 package main
 
 import (
+	"flag"
+	"fmt"
 	"log"
 	"net"
 	"sort"
@@ -12,56 +14,75 @@ import (
 	"github.com/mitchellh/go-ps"
 )
 
-func main() {
-	debuggedPID := 0
-	pidchan := make(chan int)
-	ticker := time.NewTicker(3 * time.Second)
+//DebuggedPID PID of process currently attached tot he debugger
+var DebuggedPID = 0
 
-	// Monitor the appengine modules process
+//PidChan Used to PID the PID to whcih we need to attach the debugger
+var PidChan = make(chan int)
+
+var port int
+var delaySeconds int
+var magicKey string
+
+func main() {
+	flag.IntVar(&port, "port", 2345, "Port used by the Delve server")
+	flag.IntVar(&delaySeconds, "delay", 3, "Time delay in seconds between each appengine process scan")
+	flag.StringVar(&magicKey, "key", "", "Magic key to identify a specific module bianry (default is empty string)")
+	flag.Parse()
+
+	// Monitor the appengine modules processes
 	go func() {
-		for range ticker.C {
-			processes, err := ps.Processes()
-			if err != nil {
-				log.Fatalln(err.Error())
-			}
-			pids := sort.IntSlice{}
-			for _, p := range processes {
-				if p.Executable() == "_go_app" {
-					pids = append(pids, p.Pid())
-				}
-			}
-			if len(pids) > 0 {
-				if len(pids) == 1 {
-					if pids[0] == debuggedPID { // already attached to that one
-						continue
-					}
-				}
-				pidchan <- getRecentProcess(pids)
-			}
+		checkAppengineModuleProcess()
+		for range time.Tick(time.Duration(delaySeconds) * time.Second) {
+			checkAppengineModuleProcess()
 		}
 	}()
 
 	// Wait for a PID and attach a new debugger to it
 	var stopChan chan bool
-	for pid := range pidchan {
-		if pid != debuggedPID && pid != 0 {
+	for pid := range PidChan {
+		if pid != DebuggedPID && pid != 0 {
 			if stopChan != nil {
 				stopChan <- true
-
-				//wait for the port to be free
-				var errCon error
-				var conn net.Conn
-				for errCon == nil {
-					conn, errCon = net.Dial("tcp", ":2345")
-					if errCon == nil {
-						log.Println("Old server still listening.")
-						conn.Close()
-						time.Sleep(1 * time.Second)
-					}
-				}
+				waitForFreePort()
 			}
-			debuggedPID = pid
-			stopChan = attachDelveServer(debuggedPID)
+			DebuggedPID = pid
+			stopChan = attachDelveServer(DebuggedPID)
+		}
+	}
+}
+
+//checkAppengineModuleProcess llok after the Appengine module process and push the latest new PID into channel
+func checkAppengineModuleProcess() {
+	processes, err := ps.Processes()
+	if err != nil {
+		log.Fatalln(err.Error())
+	}
+	pids := sort.IntSlice{}
+	for _, p := range processes {
+		if p.Executable() == "_go_app" {
+			pids = append(pids, p.Pid())
+		}
+	}
+	if len(pids) > 0 {
+		if len(pids) == 1 {
+			if pids[0] == DebuggedPID { // already attached to that one
+				return
+			}
+		}
+		PidChan <- getRecentProcess(pids)
+	}
+}
+
+func waitForFreePort() {
+	var errCon error
+	var conn net.Conn
+	for errCon == nil {
+		conn, errCon = net.Dial("tcp", fmt.Sprintf(":%d", port))
+		if errCon == nil {
+			log.Println("Old server still listening.")
+			conn.Close()
+			time.Sleep(1 * time.Second)
 		}
 	}
 }
@@ -74,7 +95,7 @@ func attachDelveServer(attachPid int) chan bool {
 		defer close(stopChan)
 
 		// Make a TCP listener
-		listener, err := net.Listen("tcp", ":2345")
+		listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 		for err != nil {
 			log.Printf("Couldn't start listener: %s\n", err)
 			time.Sleep(1 * time.Second)
