@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/derekparker/delve/service"
-	"github.com/derekparker/delve/service/rpc"
+	"github.com/derekparker/delve/service/rpc2"
 	"github.com/mitchellh/go-ps"
 )
 
@@ -124,7 +124,7 @@ func attachDelveServer(attachPid int) chan bool {
 		defer listener.Close()
 
 		// Create and start a debugger server
-		server := rpc.NewServer(&service.Config{
+		server := rpc2.NewServer(&service.Config{
 			Listener:    listener,
 			ProcessArgs: []string{},
 			AttachPid:   attachPid,
