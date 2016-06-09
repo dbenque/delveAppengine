@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/derekparker/delve/service"
-	"github.com/derekparker/delve/service/rpc2"
+	"github.com/derekparker/delve/service/rpc1"
 	"github.com/mitchellh/go-ps"
 )
 
@@ -25,7 +25,7 @@ var delaySeconds int
 var magicKey string
 
 func main() {
-	flag.IntVar(&port, "port", 2345, "Port used by the Delve server")
+	flag.IntVar(&port, "port", 2346, "Port used by the Delve server")
 	flag.IntVar(&delaySeconds, "delay", 3, "Time delay in seconds between each appengine process scan")
 	flag.StringVar(&magicKey, "key", "", "Magic key to identify a specific module bianry (default is empty string)")
 	flag.Parse()
@@ -124,7 +124,7 @@ func attachDelveServer(attachPid int) chan bool {
 		defer listener.Close()
 
 		// Create and start a debugger server
-		server := rpc2.NewServer(&service.Config{
+		server := rpc1.NewServer(&service.Config{
 			Listener:    listener,
 			ProcessArgs: []string{},
 			AttachPid:   attachPid,
