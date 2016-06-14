@@ -11,7 +11,6 @@ import (
 
 	"github.com/derekparker/delve/service"
 	"github.com/derekparker/delve/service/rpc1"
-	"github.com/mitchellh/go-ps"
 )
 
 //DebuggedPID PID of process currently attached tot he debugger
@@ -54,7 +53,7 @@ func main() {
 
 //checkAppengineModuleProcess llok after the Appengine module process and push the latest new PID into channel
 func checkAppengineModuleProcess() {
-	processes, err := ps.Processes()
+	processes, err := processes()
 	if err != nil {
 		log.Fatalln(err.Error())
 	}
