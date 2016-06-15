@@ -1,0 +1,17 @@
+language: go
+sudo: false
+os:
+  - linux
+  - osx
+go_import_path: github.com/dbenque/delveAppengine
+go:
+  - 1.6.2
+  - tip
+install: echo "do nothing"
+matrix:
+  allow_failures:
+    - os: osx
+env:
+  global:
+    - GO15VENDOREXPERIMENT=1
+script: go build &&  go test
