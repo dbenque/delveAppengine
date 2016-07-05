@@ -25,7 +25,7 @@ var delaySeconds int
 var magicKey string
 
 func main() {
-	flag.IntVar(&port, "port", 2346, "Port used by the Delve server")
+	flag.IntVar(&port, "port", 2345, "Port used by the Delve server")
 	flag.IntVar(&delaySeconds, "delay", 3, "Time delay in seconds between each appengine process scan")
 	flag.StringVar(&magicKey, "key", "", "Magic key to identify a specific module bianry (default is empty string)")
 	flag.Parse()
