@@ -110,7 +110,6 @@ func binaryContainsMagicKey(pid int, key string) bool {
 }
 
 func processes() ([]DarwinProcess, error) {
-	fmt.Println("processes")
 	darwinLock.Lock()
 	defer darwinLock.Unlock()
 	darwinProcs = make([]DarwinProcess, 0, 50)
