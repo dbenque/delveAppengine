@@ -9,7 +9,7 @@ import (
 	"reflect"
 	"strconv"
 
-	"github.com/derekparker/delve/dwarf/debug/dwarf"
+	"golang.org/x/debug/dwarf"
 	"github.com/derekparker/delve/proc"
 )
 
@@ -87,6 +87,9 @@ func ConvertThread(th *proc.Thread) *Thread {
 func prettyTypeName(typ dwarf.Type) string {
 	if typ == nil {
 		return ""
+	}
+	if typ.Common().Name != "" {
+		return typ.Common().Name
 	}
 	r := typ.String()
 	if r == "*void" {
@@ -186,11 +189,17 @@ func ConvertFunction(fn *gosym.Func) *Function {
 
 // ConvertGoroutine converts from proc.G to api.Goroutine.
 func ConvertGoroutine(g *proc.G) *Goroutine {
+	th := g.Thread()
+	tid := 0
+	if th != nil {
+		tid = th.ID
+	}
 	return &Goroutine{
 		ID:             g.ID,
 		CurrentLoc:     ConvertLocation(g.CurrentLoc),
 		UserCurrentLoc: ConvertLocation(g.UserCurrent()),
 		GoStatementLoc: ConvertLocation(g.Go()),
+		ThreadID: tid,
 	}
 }
 

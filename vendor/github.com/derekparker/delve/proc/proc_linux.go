@@ -1,6 +1,7 @@
 package proc
 
 import (
+	"bytes"
 	"debug/gosym"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,7 +18,7 @@ import (
 
 	sys "golang.org/x/sys/unix"
 
-	"github.com/derekparker/delve/dwarf/debug/elf"
+	"golang.org/x/debug/elf"
 	"github.com/derekparker/delve/dwarf/frame"
 	"github.com/derekparker/delve/dwarf/line"
 )
@@ -49,6 +51,10 @@ func Launch(cmd []string) (*Process, error) {
 		proc *exec.Cmd
 		err  error
 	)
+	// check that the argument to Launch is an executable file
+	if fi, staterr := os.Stat(cmd[0]); staterr == nil && (fi.Mode()&0111) == 0 {
+		return nil, NotExecutableErr
+	}
 	dbp := New(0)
 	dbp.execPtraceFunc(func() {
 		proc = exec.Command(cmd[0])
@@ -162,6 +168,8 @@ func (dbp *Process) updateThreadList() error {
 	return nil
 }
 
+var UnsupportedArchErr = errors.New("unsupported architecture - only linux/amd64 is supported")
+
 func (dbp *Process) findExecutable(path string) (*elf.File, error) {
 	if path == "" {
 		path = fmt.Sprintf("/proc/%d/exe", dbp.Pid)
@@ -173,6 +181,9 @@ func (dbp *Process) findExecutable(path string) (*elf.File, error) {
 	elfFile, err := elf.NewFile(f)
 	if err != nil {
 		return nil, err
+	}
+	if elfFile.Machine != elf.EM_X86_64 {
+		return nil, UnsupportedArchErr
 	}
 	dbp.dwarf, err = elfFile.DWARF()
 	if err != nil {
@@ -283,6 +294,10 @@ func (dbp *Process) trapWait(pid int) (*Thread, error) {
 			var cloned uint
 			dbp.execPtraceFunc(func() { cloned, err = sys.PtraceGetEventMsg(wpid) })
 			if err != nil {
+				if err == sys.ESRCH {
+					// thread died while we were adding it
+					continue
+				}
 				return nil, fmt.Errorf("could not get event message: %s", err)
 			}
 			th, err = dbp.addThread(int(cloned), false)
@@ -337,12 +352,30 @@ func (dbp *Process) loadProcessInformation(wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	comm, err := ioutil.ReadFile(fmt.Sprintf("/proc/%d/comm", dbp.Pid))
-	if err != nil {
-		fmt.Printf("Could not read process comm name: %v\n", err)
-		os.Exit(1)
+	if err == nil {
+		// removes newline character
+		comm = bytes.TrimSuffix(comm, []byte("\n"))
 	}
-	// removes newline character
-	comm = comm[:len(comm)-1]
+
+	if comm == nil || len(comm) <= 0 {
+		stat, err := ioutil.ReadFile(fmt.Sprintf("/proc/%d/stat", dbp.Pid))
+		if err != nil {
+			fmt.Printf("Could not read proc stat: %v\n", err)
+			os.Exit(1)
+		}
+		expr := fmt.Sprintf("%d\\s*\\((.*)\\)", dbp.Pid)
+		rexp, err := regexp.Compile(expr)
+		if err != nil {
+			fmt.Printf("Regexp compile error: %v\n", err)
+			os.Exit(1)
+		}
+		match := rexp.FindSubmatch(stat)
+		if match == nil {
+			fmt.Printf("No match found using regexp '%s' in /proc/%d/stat\n", expr, dbp.Pid)
+			os.Exit(1)
+		}
+		comm = match[1]
+	}
 	dbp.os.comm = strings.Replace(string(comm), "%", "%%", -1)
 }
 

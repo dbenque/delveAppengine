@@ -23,8 +23,12 @@ type Stackframe struct {
 	Current Location
 	// Address of the call instruction for the function above on the call stack.
 	Call Location
-	CFA  int64
-	Ret  uint64
+	// Start address of the stack frame.
+	CFA int64
+	// Description of the stack frame.
+	FDE *frame.FrameDescriptionEntry
+	// Return address for this stack frame (as read from the stack frame itself).
+	Ret uint64
 }
 
 // Scope returns a new EvalScope using this frame.
@@ -179,7 +183,7 @@ func (dbp *Process) frameInfo(pc, sp uint64, top bool) (Stackframe, error) {
 	if err != nil {
 		return Stackframe{}, err
 	}
-	r := Stackframe{Current: Location{PC: pc, File: f, Line: l, Fn: fn}, CFA: cfa, Ret: binary.LittleEndian.Uint64(data)}
+	r := Stackframe{Current: Location{PC: pc, File: f, Line: l, Fn: fn}, CFA: cfa, FDE: fde, Ret: binary.LittleEndian.Uint64(data)}
 	if !top {
 		r.Call.File, r.Call.Line, r.Call.Fn = dbp.PCToLine(pc - 1)
 		r.Call.PC, _, _ = dbp.goSymTable.LineToPC(r.Call.File, r.Call.Line)
