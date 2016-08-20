@@ -43,7 +43,8 @@ func (p *DarwinProcess) PPid() int {
 
 // Executable returns the executable name
 func (p *DarwinProcess) Executable() string {
-	return p.binary
+	s := strings.Split(p.binary, "/")
+	return s[len(s)-1]
 }
 
 // StartTime returns process Start time
@@ -109,7 +110,6 @@ func binaryContainsMagicKey(pid int, key string) bool {
 }
 
 func processes() ([]DarwinProcess, error) {
-	fmt.Println("processes")
 	darwinLock.Lock()
 	defer darwinLock.Unlock()
 	darwinProcs = make([]DarwinProcess, 0, 50)
