@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/derekparker/delve/service"
-	"github.com/derekparker/delve/service/rpc1"
+	"github.com/derekparker/delve/service/rpccommon"
 )
 
 //DebuggedPID PID of process currently attached tot he debugger
@@ -123,7 +123,7 @@ func attachDelveServer(attachPid int) chan bool {
 		defer listener.Close()
 
 		// Create and start a debugger server
-		server := rpc1.NewServer(&service.Config{
+		server := rpccommon.NewServer(&service.Config{
 			Listener:    listener,
 			ProcessArgs: []string{},
 			AttachPid:   attachPid,
