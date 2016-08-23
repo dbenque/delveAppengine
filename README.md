@@ -18,3 +18,4 @@ Tested under Linux (Arch and Ubuntu)
 
 Tested under Mac thanks to [cedriclam](https://github.com/cedriclam)
 
+Complete article about how to use it with visual studio code: https://medium.com/@dbenque/debugging-golang-appengine-module-with-visual-studio-code-85b3aa59e0f
