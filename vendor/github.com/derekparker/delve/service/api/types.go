@@ -10,6 +10,8 @@ import (
 	"github.com/derekparker/delve/proc"
 )
 
+var NotExecutableErr = proc.NotExecutableErr
+
 // DebuggerState represents the current context of the debugger.
 type DebuggerState struct {
 	// CurrentThread is the currently selected debugger thread.
@@ -200,6 +202,8 @@ type Goroutine struct {
 	UserCurrentLoc Location `json:"userCurrentLoc"`
 	// Location of the go instruction that started this goroutine
 	GoStatementLoc Location `json:"goStatementLoc"`
+	// ID of the associated thread for running goroutines
+	ThreadID int `json:"threadID"`
 }
 
 // DebuggerCommand is a command which changes the debugger's execution state.
@@ -269,3 +273,18 @@ type AsmInstruction struct {
 }
 
 type AsmInstructions []AsmInstruction
+
+type GetVersionIn struct {
+}
+
+type GetVersionOut struct {
+	DelveVersion string
+	APIVersion   int
+}
+
+type SetAPIVersionIn struct {
+	APIVersion int
+}
+
+type SetAPIVersionOut struct {
+}

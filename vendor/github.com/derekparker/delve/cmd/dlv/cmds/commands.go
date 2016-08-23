@@ -15,8 +15,8 @@ import (
 	"github.com/derekparker/delve/config"
 	"github.com/derekparker/delve/service"
 	"github.com/derekparker/delve/service/api"
-	"github.com/derekparker/delve/service/rpc1"
 	"github.com/derekparker/delve/service/rpc2"
+	"github.com/derekparker/delve/service/rpccommon"
 	"github.com/derekparker/delve/terminal"
 	"github.com/derekparker/delve/version"
 	"github.com/spf13/cobra"
@@ -27,8 +27,8 @@ var (
 	Log bool
 	// Headless is whether to run without terminal.
 	Headless bool
-	// ApiVersion is the requested API version while running headless
-	ApiVersion int
+	// APIVersion is the requested API version while running headless
+	APIVersion int
 	// AcceptMulti allows multiple clients to connect to the same server
 	AcceptMulti bool
 	// Addr is the debugging server listen address.
@@ -81,7 +81,7 @@ func New() *cobra.Command {
 	RootCommand.PersistentFlags().BoolVarP(&Log, "log", "", false, "Enable debugging server logging.")
 	RootCommand.PersistentFlags().BoolVarP(&Headless, "headless", "", false, "Run debug server only, in headless mode.")
 	RootCommand.PersistentFlags().BoolVarP(&AcceptMulti, "accept-multiclient", "", false, "Allows a headless server to accept multiple client connections. Note that the server API is not reentrant and clients will have to coordinate.")
-	RootCommand.PersistentFlags().IntVar(&ApiVersion, "api-version", 1, "Selects API version when headless.")
+	RootCommand.PersistentFlags().IntVar(&APIVersion, "api-version", 1, "Selects API version when headless.")
 	RootCommand.PersistentFlags().StringVar(&InitFile, "init", "", "Init file, executed by the terminal client.")
 	RootCommand.PersistentFlags().StringVar(&BuildFlags, "build-flags", buildFlagsDefault, "Build flags, to be passed to the compiler.")
 
@@ -151,7 +151,7 @@ consider compiling debugging binaries with -gcflags="-N -l".`,
 			return nil
 		},
 		Run: func(cmd *cobra.Command, args []string) {
-			os.Exit(execute(0, args, conf))
+			os.Exit(execute(0, args, conf, executingExistingFile))
 		},
 	}
 	RootCommand.AddCommand(execCommand)
@@ -231,7 +231,7 @@ func debugCmd(cmd *cobra.Command, args []string) {
 		defer os.Remove(fp)
 
 		processArgs := append([]string{"./" + debugname}, targetArgs...)
-		return execute(0, processArgs, conf)
+		return execute(0, processArgs, conf, executingGeneratedFile)
 	}()
 	os.Exit(status)
 }
@@ -268,10 +268,11 @@ func traceCmd(cmd *cobra.Command, args []string) {
 		defer listener.Close()
 
 		// Create and start a debug server
-		server := rpc2.NewServer(&service.Config{
+		server := rpccommon.NewServer(&service.Config{
 			Listener:    listener,
 			ProcessArgs: processArgs,
 			AttachPid:   traceAttachPid,
+			APIVersion:  2,
 		}, Log)
 		if err := server.Run(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -318,7 +319,7 @@ func testCmd(cmd *cobra.Command, args []string) {
 		defer os.Remove("./" + testdebugname)
 		processArgs := append([]string{"./" + testdebugname}, targetArgs...)
 
-		return execute(0, processArgs, conf)
+		return execute(0, processArgs, conf, executingOther)
 	}()
 	os.Exit(status)
 }
@@ -329,7 +330,7 @@ func attachCmd(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "Invalid pid: %s\n", args[0])
 		os.Exit(1)
 	}
-	os.Exit(execute(pid, nil, conf))
+	os.Exit(execute(pid, nil, conf, executingOther))
 }
 
 func connectCmd(cmd *cobra.Command, args []string) {
@@ -360,7 +361,15 @@ func connect(addr string, conf *config.Config) int {
 	return status
 }
 
-func execute(attachPid int, processArgs []string, conf *config.Config) int {
+type executeKind int
+
+const (
+	executingExistingFile = executeKind(iota)
+	executingGeneratedFile
+	executingOther
+)
+
+func execute(attachPid int, processArgs []string, conf *config.Config, kind executeKind) int {
 	// Make a TCP listener
 	listener, err := net.Listen("tcp", Addr)
 	if err != nil {
@@ -378,32 +387,34 @@ func execute(attachPid int, processArgs []string, conf *config.Config) int {
 		Stop(bool) error
 	}
 
-	if !Headless {
-		ApiVersion = 2
-	}
-
 	// Create and start a debugger server
-	switch ApiVersion {
-	case 1:
-		server = rpc1.NewServer(&service.Config{
+	switch APIVersion {
+	case 1, 2:
+		server = rpccommon.NewServer(&service.Config{
 			Listener:    listener,
 			ProcessArgs: processArgs,
 			AttachPid:   attachPid,
 			AcceptMulti: AcceptMulti,
-		}, Log)
-	case 2:
-		server = rpc2.NewServer(&service.Config{
-			Listener:    listener,
-			ProcessArgs: processArgs,
-			AttachPid:   attachPid,
-			AcceptMulti: AcceptMulti,
+			APIVersion:  APIVersion,
 		}, Log)
 	default:
-		fmt.Println("Unknown API version %d", ApiVersion)
+		fmt.Println("Unknown API version %d", APIVersion)
 		return 1
 	}
 
 	if err := server.Run(); err != nil {
+		if err == api.NotExecutableErr {
+			switch kind {
+			case executingGeneratedFile:
+				fmt.Fprintln(os.Stderr, "Can not debug non-main package")
+				return 1
+			case executingExistingFile:
+				fmt.Fprintf(os.Stderr, "%s is not executable\n", processArgs[0])
+				return 1
+			default:
+				// fallthrough
+			}
+		}
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}

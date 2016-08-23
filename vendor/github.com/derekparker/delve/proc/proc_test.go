@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -339,7 +340,7 @@ func TestNextGeneral(t *testing.T) {
 
 	ver, _ := ParseVersionString(runtime.Version())
 
-	if ver.Major < 0 || ver.AfterOrEqual(GoVersion{1, 7, 0, 0, 0}) {
+	if ver.Major < 0 || ver.AfterOrEqual(GoVersion{1, 7, -1, 0, 0}) {
 		testcases = []nextTest{
 			{17, 19},
 			{19, 20},
@@ -485,7 +486,8 @@ func TestNextFunctionReturnDefer(t *testing.T) {
 		{5, 8},
 		{8, 9},
 		{9, 10},
-		{10, 7},
+		{10, 6},
+		{6, 7},
 		{7, 8},
 	}
 	testnext("testnextdefer", testcases, "main.main", t)
@@ -1654,7 +1656,7 @@ func TestPackageVariables(t *testing.T) {
 
 func TestIssue149(t *testing.T) {
 	ver, _ := ParseVersionString(runtime.Version())
-	if ver.Major > 0 && !ver.AfterOrEqual(GoVersion{1, 7, 0, 0, 0}) {
+	if ver.Major > 0 && !ver.AfterOrEqual(GoVersion{1, 7, -1, 0, 0}) {
 		return
 	}
 	// setting breakpoint on break statement
@@ -1683,7 +1685,7 @@ func TestCmdLineArgs(t *testing.T) {
 		}
 		exit, exited := err.(ProcessExitedError)
 		if !exited {
-			t.Fatalf("Process did not exit!", err)
+			t.Fatalf("Process did not exit: %v", err)
 		} else {
 			if exit.Status != 0 {
 				t.Fatalf("process exited with invalid status", exit.Status)
@@ -1750,4 +1752,146 @@ func TestIssue554(t *testing.T) {
 	if mem.contains(0xffffffffffffffff, 40) {
 		t.Fatalf("should be false")
 	}
+}
+
+func TestNextParked(t *testing.T) {
+	withTestProcess("parallel_next", t, func(p *Process, fixture protest.Fixture) {
+		bp, err := setFunctionBreakpoint(p, "main.sayhi")
+		assertNoError(err, t, "SetBreakpoint()")
+
+		// continue until a parked goroutine exists
+		var parkedg *G
+	LookForParkedG:
+		for {
+			err := p.Continue()
+			if _, exited := err.(ProcessExitedError); exited {
+				t.Log("could not find parked goroutine")
+				return
+			}
+			assertNoError(err, t, "Continue()")
+
+			gs, err := p.GoroutinesInfo()
+			assertNoError(err, t, "GoroutinesInfo()")
+
+			for _, g := range gs {
+				if g.thread == nil {
+					parkedg = g
+					break LookForParkedG
+				}
+			}
+		}
+
+		assertNoError(p.SwitchGoroutine(parkedg.ID), t, "SwitchGoroutine()")
+		p.ClearBreakpoint(bp.Addr)
+		assertNoError(p.Next(), t, "Next()")
+
+		if p.SelectedGoroutine.ID != parkedg.ID {
+			t.Fatalf("Next did not continue on the selected goroutine, expected %d got %d", parkedg.ID, p.SelectedGoroutine.ID)
+		}
+	})
+}
+
+func TestStepParked(t *testing.T) {
+	withTestProcess("parallel_next", t, func(p *Process, fixture protest.Fixture) {
+		bp, err := setFunctionBreakpoint(p, "main.sayhi")
+		assertNoError(err, t, "SetBreakpoint()")
+
+		// continue until a parked goroutine exists
+		var parkedg *G
+	LookForParkedG:
+		for {
+			err := p.Continue()
+			if _, exited := err.(ProcessExitedError); exited {
+				t.Log("could not find parked goroutine")
+				return
+			}
+			assertNoError(err, t, "Continue()")
+
+			gs, err := p.GoroutinesInfo()
+			assertNoError(err, t, "GoroutinesInfo()")
+
+			for _, g := range gs {
+				if g.thread == nil {
+					parkedg = g
+					break LookForParkedG
+				}
+			}
+		}
+
+		assertNoError(p.SwitchGoroutine(parkedg.ID), t, "SwitchGoroutine()")
+		p.ClearBreakpoint(bp.Addr)
+		assertNoError(p.Step(), t, "Step()")
+
+		if p.SelectedGoroutine.ID != parkedg.ID {
+			t.Fatalf("Step did not continue on the selected goroutine, expected %d got %d", parkedg.ID, p.SelectedGoroutine.ID)
+		}
+	})
+}
+
+func TestIssue509(t *testing.T) {
+	fixturesDir := protest.FindFixturesDir()
+	nomaindir := filepath.Join(fixturesDir, "nomaindir")
+	cmd := exec.Command("go", "build", "-gcflags=-N -l", "-o", "debug")
+	cmd.Dir = nomaindir
+	assertNoError(cmd.Run(), t, "go build")
+	exepath := filepath.Join(nomaindir, "debug")
+	_, err := Launch([]string{exepath})
+	if err == nil {
+		t.Fatalf("expected error but none was generated")
+	}
+	if err != NotExecutableErr {
+		t.Fatalf("expected error \"%v\" got \"%v\"", NotExecutableErr, err)
+	}
+	os.Remove(exepath)
+}
+
+func TestUnsupportedArch(t *testing.T) {
+	ver, _ := ParseVersionString(runtime.Version())
+	if ver.Major < 0 || !ver.AfterOrEqual(GoVersion{1, 6, -1, 0, 0}) || ver.AfterOrEqual(GoVersion{1, 7, -1, 0, 0}) {
+		// cross compile (with -N?) works only on select versions of go
+		return
+	}
+
+	fixturesDir := protest.FindFixturesDir()
+	infile := filepath.Join(fixturesDir, "math.go")
+	outfile := filepath.Join(fixturesDir, "_math_debug_386")
+
+	cmd := exec.Command("go", "build", "-gcflags=-N -l", "-o", outfile, infile)
+	for _, v := range os.Environ() {
+		if !strings.HasPrefix(v, "GOARCH=") {
+			cmd.Env = append(cmd.Env, v)
+		}
+	}
+	cmd.Env = append(cmd.Env, "GOARCH=386")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go build failed: %v: %v", err, string(out))
+	}
+	defer os.Remove(outfile)
+
+	p, err := Launch([]string{outfile})
+	switch err {
+	case UnsupportedArchErr:
+		// all good
+	case nil:
+		p.Halt()
+		p.Kill()
+		t.Fatal("Launch is expected to fail, but succeeded")
+	default:
+		t.Fatal(err)
+	}
+}
+
+func Test1Issue573(t *testing.T) {
+	// calls to runtime.duffzero and runtime.duffcopy jump directly into the middle
+	// of the function and the temp breakpoint set by StepInto may be missed.
+	withTestProcess("issue573", t, func(p *Process, fixture protest.Fixture) {
+		f := p.goSymTable.LookupFunc("main.foo")
+		_, err := p.SetBreakpoint(f.Entry)
+		assertNoError(err, t, "SetBreakpoint()")
+		assertNoError(p.Continue(), t, "Continue()")
+		assertNoError(p.Step(), t, "Step() #1")
+		assertNoError(p.Step(), t, "Step() #2") // Bug exits here.
+		assertNoError(p.Step(), t, "Step() #3") // Third step ought to be possible; program ought not have exited.
+	})
 }

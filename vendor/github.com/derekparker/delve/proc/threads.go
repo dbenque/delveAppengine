@@ -5,12 +5,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"go/ast"
 	"path/filepath"
 	"reflect"
 	"runtime"
 
-	"github.com/derekparker/delve/dwarf/debug/dwarf"
-	"github.com/derekparker/delve/dwarf/frame"
+	"golang.org/x/debug/dwarf"
 )
 
 // Thread represents a single thread in the traced process
@@ -123,122 +123,97 @@ func (tbe ThreadBlockedError) Error() string {
 	return ""
 }
 
-// Set breakpoints for potential next lines.
-func (thread *Thread) setNextBreakpoints() (err error) {
-	if thread.blocked() {
-		return ThreadBlockedError{}
-	}
-	curpc, err := thread.PC()
-	if err != nil {
-		return err
-	}
+// returns topmost frame of g or thread if g is nil
+func topframe(g *G, thread *Thread) (Stackframe, error) {
+	var frames []Stackframe
+	var err error
 
-	// Grab info on our current stack frame. Used to determine
-	// whether we may be stepping outside of the current function.
-	fde, err := thread.dbp.frameEntries.FDEForPC(curpc)
-	if err != nil {
-		return err
-	}
-
-	// Get current file/line.
-	loc, err := thread.Location()
-	if err != nil {
-		return err
-	}
-	if filepath.Ext(loc.File) == ".go" {
-		err = thread.next(curpc, fde, loc.File, loc.Line)
+	if g == nil {
+		if thread.blocked() {
+			return Stackframe{}, ThreadBlockedError{}
+		}
+		frames, err = thread.Stacktrace(0)
 	} else {
-		err = thread.cnext(curpc, fde, loc.File)
+		frames, err = g.Stacktrace(0)
 	}
-	return err
+	if err != nil {
+		return Stackframe{}, err
+	}
+	if len(frames) < 1 {
+		return Stackframe{}, errors.New("empty stack trace")
+	}
+	return frames[0], nil
 }
 
-// GoroutineExitingError is returned when the
-// goroutine specified by `goid` is in the process
-// of exiting.
-type GoroutineExitingError struct {
-	goid int
-}
+// Set breakpoints for potential next lines.
+func (dbp *Process) setNextBreakpoints() (err error) {
+	topframe, err := topframe(dbp.SelectedGoroutine, dbp.CurrentThread)
+	if err != nil {
+		return err
+	}
 
-func (ge GoroutineExitingError) Error() string {
-	return fmt.Sprintf("goroutine %d is exiting", ge.goid)
+	if filepath.Ext(topframe.Current.File) != ".go" {
+		return dbp.cnext(topframe)
+	}
+
+	return dbp.next(dbp.SelectedGoroutine, topframe)
 }
 
 // Set breakpoints at every line, and the return address. Also look for
 // a deferred function and set a breakpoint there too.
-func (thread *Thread) next(curpc uint64, fde *frame.FrameDescriptionEntry, file string, line int) error {
-	pcs := thread.dbp.lineInfo.AllPCsBetween(fde.Begin(), fde.End()-1, file)
+func (dbp *Process) next(g *G, topframe Stackframe) error {
+	pcs := dbp.lineInfo.AllPCsBetween(topframe.FDE.Begin(), topframe.FDE.End()-1, topframe.Current.File)
 
-	g, err := thread.GetG()
-	if err != nil {
-		return err
-	}
-	if g.DeferPC != 0 {
-		f, lineno, _ := thread.dbp.goSymTable.PCToLine(g.DeferPC)
-		for {
-			lineno++
-			dpc, _, err := thread.dbp.goSymTable.LineToPC(f, lineno)
-			if err == nil {
-				// We want to avoid setting an actual breakpoint on the
-				// entry point of the deferred function so instead create
-				// a fake breakpoint which will be cleaned up later.
-				thread.dbp.Breakpoints[g.DeferPC] = new(Breakpoint)
-				defer func() { delete(thread.dbp.Breakpoints, g.DeferPC) }()
-				if _, err = thread.dbp.SetTempBreakpoint(dpc); err != nil {
-					return err
-				}
-				break
-			}
+	var deferpc uint64 = 0
+	if g != nil && g.DeferPC != 0 {
+		_, _, deferfn := dbp.goSymTable.PCToLine(g.DeferPC)
+		var err error
+		deferpc, err = dbp.FirstPCAfterPrologue(deferfn, false)
+		if err != nil {
+			return err
 		}
-	}
-
-	ret, err := thread.ReturnAddress()
-	if err != nil {
-		return err
 	}
 
 	var covered bool
 	for i := range pcs {
-		if fde.Cover(pcs[i]) {
+		if topframe.FDE.Cover(pcs[i]) {
 			covered = true
 			break
 		}
 	}
 
 	if !covered {
-		fn := thread.dbp.goSymTable.PCToFunc(ret)
-		if fn != nil && fn.Name == "runtime.goexit" {
-			g, err := thread.GetG()
-			if err != nil {
-				return err
-			}
-			return GoroutineExitingError{goid: g.ID}
+		fn := dbp.goSymTable.PCToFunc(topframe.Ret)
+		if g != nil && fn != nil && fn.Name == "runtime.goexit" {
+			return nil
 		}
 	}
-	pcs = append(pcs, ret)
-	return thread.setNextTempBreakpoints(curpc, pcs)
+	if deferpc != 0 {
+		pcs = append(pcs, deferpc)
+	}
+	pcs = append(pcs, topframe.Ret)
+	return dbp.setTempBreakpoints(topframe.Current.PC, pcs, sameGoroutineCondition(dbp.SelectedGoroutine))
 }
 
 // Set a breakpoint at every reachable location, as well as the return address. Without
 // the benefit of an AST we can't be sure we're not at a branching statement and thus
 // cannot accurately predict where we may end up.
-func (thread *Thread) cnext(curpc uint64, fde *frame.FrameDescriptionEntry, file string) error {
-	pcs := thread.dbp.lineInfo.AllPCsBetween(fde.Begin(), fde.End(), file)
-	ret, err := thread.ReturnAddress()
-	if err != nil {
-		return err
-	}
-	pcs = append(pcs, ret)
-	return thread.setNextTempBreakpoints(curpc, pcs)
+func (dbp *Process) cnext(topframe Stackframe) error {
+	pcs := dbp.lineInfo.AllPCsBetween(topframe.FDE.Begin(), topframe.FDE.End(), topframe.Current.File)
+	pcs = append(pcs, topframe.Ret)
+	return dbp.setTempBreakpoints(topframe.Current.PC, pcs, sameGoroutineCondition(dbp.SelectedGoroutine))
 }
 
-func (thread *Thread) setNextTempBreakpoints(curpc uint64, pcs []uint64) error {
+// setTempBreakpoints sets a breakpoint to all addresses specified in pcs
+// skipping over curpc and curpc-1
+func (dbp *Process) setTempBreakpoints(curpc uint64, pcs []uint64, cond ast.Expr) error {
 	for i := range pcs {
 		if pcs[i] == curpc || pcs[i] == curpc-1 {
 			continue
 		}
-		if _, err := thread.dbp.SetTempBreakpoint(pcs[i]); err != nil {
+		if _, err := dbp.SetTempBreakpoint(pcs[i], cond); err != nil {
 			if _, ok := err.(BreakpointExistsError); !ok {
+				dbp.ClearTempBreakpoints()
 				return err
 			}
 		}
